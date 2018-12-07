@@ -1,38 +1,44 @@
-import java.util.*
+package kata9
 
+data class CartItem(val sku:String="", val unitPrice:Int=0)
+data class PricingResult(val items:List<CartItem>, val totalPrice:Int)
 
-data class CartItem(val itemCode:String="", val unitPrice:Int=0, val quantity:Int=0)
-data class Promotion(val itemCode:String="", val quantity:Int=0, val price:Int=0)
+interface PricingRule {
+	fun apply(itemsBySku:Map<String,MutableList<CartItem>>):Collection<PricingResult>
+}
 
-class CartCalculator {
-	fun calculate(cartContents:List<CartItem>, promotions:Collection<Promotion>):Int {
+// A cart which contains individual line items
+class Cart(val items:List<CartItem>) {
 
-		// Create a lookup structure for the promotions.  Key by promotion, then each key should be a navigable map keyed by the quantity that applies to the promotion
-		val promoLookup = promotions.groupBy {it.itemCode}.entries.associate { it.key to TreeMap(it.value.groupBy { it.quantity }) }
-		val cartByItem = cartContents.groupBy { it.itemCode }
+	fun calculate(rules:List<PricingRule>):Int {
 
-		val itemTotals = cartByItem.entries.associate {
+		// Make a lookup table with items grouped by sku, with mutable keys and prices sorted so that expensive items are taken first
+		val itemsBySku = this.items
+				.groupBy { it.sku }.entries
+				.associate { entry -> entry.key to entry.value.sortedByDescending { it.unitPrice }.toMutableList() }
 
-			var itemTotal = 0
-			var quantityRemaining = it.value.fold(0) { sum, item -> sum + item.quantity }
-			val promosForItem = promoLookup[it.key]
-			if(promosForItem!=null) {
-				var bestPromo: Promotion?
-				do {
-					bestPromo = promosForItem.floorEntry(quantityRemaining)?.value?.first()
-					if(bestPromo!=null) {
-						itemTotal += bestPromo.price
-						quantityRemaining -= bestPromo.quantity
-					}
-				} while (bestPromo != null)
+		// Single threaded only please as we are holding calculation state in the itemsBySky object
+		val pricedCart = rules.map { it.apply(itemsBySku) }.flatten()
 
-				itemTotal += quantityRemaining*it.value.first().unitPrice
-			}
+		return pricedCart.fold(0) { total, item -> total + item.totalPrice }
+	}
+}
 
-			it.key to itemTotal
+// A multibuy which operates on a single sku
+class SingleSkuMultibuy(val sku:String, val quantity:Int, val totalPrice: Int) : PricingRule {
+	override fun apply(itemsBySku: Map<String, MutableList<CartItem>>): Collection<PricingResult> {
+
+		if(itemsBySku.containsKey(sku)) {
+			val (qualified, leftover) = itemsBySku.getOrDefault(sku, mutableListOf())
+					.chunked(quantity)
+					.partition { it.size == quantity }
+
+			return listOf(
+					qualified.map { PricingResult(it, totalPrice) },
+					listOf(PricingResult(leftover.flatten(), leftover.flatten().fold(0) { total, item -> total+item.unitPrice} ))
+			).flatten()
 		}
 
-		// Add up the item totals
-		return itemTotals.values.reduce { a,b -> a+b }
+		return emptyList()
 	}
 }
